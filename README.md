@@ -66,9 +66,6 @@ This project enables real-time weather monitoring and rule-based notifications f
 - Python 3.12
 - IAM roles with Lambda, RDS, DynamoDB, SNS, and API Gateway permissions
 
-![image](https://github.com/user-attachments/assets/d57ab5a0-e0d5-4338-ae1b-4e2ec2457b5f)
-
-
 ## Database Overview
 
 ### PostgreSQL Tables
