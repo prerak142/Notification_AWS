@@ -1,119 +1,119 @@
-Climate Resilient Farms of the Future: Notification Rules Engine
+# Climate Resilient Farms of the Future: Notification Rules Engine
 
-This project enables real-time weather monitoring and rule-based notifications for climate-smart farming. It integrates data from multiple weather APIs, stores it in AWS-backed infrastructure, and triggers alerts based on user-defined conditions
+This project enables real-time weather monitoring and rule-based notifications for climate-smart farming. It integrates data from multiple weather APIs, stores it in AWS-backed infrastructure, and triggers alerts based on user-defined conditions.
 
-Weather Data Sources
+## Weather Data Sources
+- OpenWeather
+- WeatherAPI
+- Yr.no
+- Open-Meteo
 
-OpenWeather
+## AWS Lambda Functions
+- **WeatherDataIngestion**: Pulls weather data from APIs and stores it in PostgreSQL.
+- **RulesEngine**: Checks weather data against user-defined rules from DynamoDB and sends alerts.
+- **RuleApiLambda**: REST API to manage rules via API Gateway.
 
-WeatherAPI
-
-Yr.no
-
-Open-Meteo
-
-AWS Lambda Functions
-
-WeatherDataIngestion: Pulls weather data from APIs and stores it in PostgreSQL.
-
-RulesEngine: Checks weather data against user-defined rules from DynamoDB and sends alerts.
-
-RuleApiLambda: REST API to manage rules via API Gateway.
-
-AWS Infrastructure
-
-PostgreSQL (RDS): Stores current_weather and forecast_weather tables.
-
-DynamoDB: Stores rule definitions in WeatherRules table.
-
-SNS: Sends email/SMS alerts. Topic ARN: arn:aws:sns:ap-south-1:580075786360:weather-alerts
-
-API Gateway: Endpoint: https://9qzfpocell.execute-api.ap-south-1.amazonaws.com/prod/rules
-Project Structure
-
-climate-resilient-farms/
-├── lambda/
-│   ├── weather_data_ingestion/
-│   │   ├── weather_data_ingestion.py
-│   │   └── requirements.txt
-│   ├── rules_engine/
-│   │   ├── rules_engine.py
-│   │   └── requirements.txt
-│   └── rule_api_lambda/
-│       ├── rule_api_lambda.py
-│       └── requirements.txt
-├── db_schema/
-│   ├── postgresql_schema.sql
-│   └── dynamodb_schema.json
-├── configuration.txt
-├── template.yaml
-└── README.md
+## AWS Infrastructure
+- **PostgreSQL (RDS)**: Stores `current_weather` and `forecast_weather` tables.
+- **DynamoDB**: Stores rule definitions in `WeatherRules` table.
+- **SNS**: Sends email/SMS alerts. Topic ARN: `arn:aws:sns:ap-south-1:580075786360:weather-alerts`
+- **API Gateway**: Endpoint: `https://9qzfpocell.execute-api.ap-south-1.amazonaws.com/prod/rules`
 
 
-Database Overview
+## Database Overview
 
-PostgreSQL Tables
+### PostgreSQL Tables
 
-current_weather
+#### `current_weather`
+- **Fields**: `source`, `farm_id`, `location`, `timestamp`, `temperature_c`, `humidity_percent`, `wind_speed_mps`, `wind_direction_deg`, `rainfall_mm`, `solar_radiation_wm2`
+- **Indexed on**: `farm_id`, `timestamp`, `location` (GIST), `(source, timestamp)`
+- **Unique**: `(farm_id, source, timestamp)`
 
-Fields: source, farm_id, location, timestamp, temperature_c, humidity_percent, wind_speed_mps, wind_direction_deg, rainfall_mm, solar_radiation_wm2
+#### `forecast_weather`
+- **Fields**: `source`, `farm_id`, `forecast_for`, `fetched_at`, `location`, `temperature_c`, `humidity_percent`, `wind_speed_mps`, `wind_direction_deg`, `rainfall_mm`, `chance_of_rain_percent`
+- **Indexed on**: `farm_id`, `forecast_for`, `location` (GIST), `(source, fetched_at)`
+- **Unique**: `(farm_id, source, forecast_for)`
 
-Indexed on: farm_id, timestamp, location (GIST), (source, timestamp)
+### DynamoDB Table: `WeatherRules`
+- **Partition Key**: `farm_id`
+- **Sort Key**: `stakeholder`
+- **Attributes**: `rule_id`, `name`, `priority`, `data_type`, `conditions`, `actions`, `stop_on_match`
+- **GSI**: `StakeholderIndex` on `(farm_id, stakeholder)`
 
-Unique: (farm_id, source, timestamp)
+## ⚙️ Configuration
 
-forecast_weather
+### Required Environment Variables
 
-Fields: source, farm_id, forecast_for, fetched_at, location, temperature_c, humidity_percent, wind_speed_mps, wind_direction_deg, rainfall_mm, chance_of_rain_percent
+#### WeatherDataIngestion
+- `OPENWEATHER_API_KEY`
+- `WEATHERAPI_API_KEY`
+- `OPEN_METEO_URL`
+- `YR_NO_URL`
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`
+- `SNS_TOPIC_ARN`
 
-Indexed on: farm_id, forecast_for, location (GIST), (source, fetched_at)
+#### RulesEngine
+- Same DB credentials as above
+- `API_KEY`, `RULE_ID`
 
-Unique: (farm_id, source, forecast_for)
+#### RuleApiLambda
+- No additional variables
 
-DynamoDB Table: WeatherRules
+## Deployment Instructions
 
-Partition Key: farm_id
+### Prerequisites
+- AWS CLI & SAM CLI
+- Python 3.12
+- IAM roles with Lambda, RDS, DynamoDB, SNS, and API Gateway permissions
 
-Sort Key: stakeholder
+![image](https://github.com/user-attachments/assets/d57ab5a0-e0d5-4338-ae1b-4e2ec2457b5f)
 
-Attributes: rule_id, name, priority, data_type, conditions, actions, stop_on_match
 
-GSI: StakeholderIndex on (farm_id, stakeholder)
+## Database Overview
 
-⚙️ Configuration
+### PostgreSQL Tables
 
-Required Environment Variables
+#### `current_weather`
+- **Fields**: `source`, `farm_id`, `location`, `timestamp`, `temperature_c`, `humidity_percent`, `wind_speed_mps`, `wind_direction_deg`, `rainfall_mm`, `solar_radiation_wm2`
+- **Indexed on**: `farm_id`, `timestamp`, `location` (GIST), `(source, timestamp)`
+- **Unique**: `(farm_id, source, timestamp)`
 
-WeatherDataIngestion
+#### `forecast_weather`
+- **Fields**: `source`, `farm_id`, `forecast_for`, `fetched_at`, `location`, `temperature_c`, `humidity_percent`, `wind_speed_mps`, `wind_direction_deg`, `rainfall_mm`, `chance_of_rain_percent`
+- **Indexed on**: `farm_id`, `forecast_for`, `location` (GIST), `(source, fetched_at)`
+- **Unique**: `(farm_id, source, forecast_for)`
 
-OPENWEATHER_API_KEY
+### DynamoDB Table: `WeatherRules`
+- **Partition Key**: `farm_id`
+- **Sort Key**: `stakeholder`
+- **Attributes**: `rule_id`, `name`, `priority`, `data_type`, `conditions`, `actions`, `stop_on_match`
+- **GSI**: `StakeholderIndex` on `(farm_id, stakeholder)`
 
-WEATHERAPI_API_KEY
+## ⚙️ Configuration
 
-OPEN_METEO_URL
+### Required Environment Variables
 
-YR_NO_URL
+#### WeatherDataIngestion
+- `OPENWEATHER_API_KEY`
+- `WEATHERAPI_API_KEY`
+- `OPEN_METEO_URL`
+- `YR_NO_URL`
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`
+- `SNS_TOPIC_ARN`
 
-DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
+#### RulesEngine
+- Same DB credentials as above
+- `API_KEY`, `RULE_ID`
 
-SNS_TOPIC_ARN
+#### RuleApiLambda
+- No additional variables
 
-RulesEngine
+## Deployment Instructions
 
-Same DB credentials as above
+### Prerequisites
+- AWS CLI & SAM CLI
+- Python 3.12
+- IAM roles with Lambda, RDS, DynamoDB, SNS, and API Gateway permissions
 
-API_KEY, RULE_ID
 
-RuleApiLambda
-
-No additional variables
-Deployment Instructions
-
-Prerequisites
-
-AWS CLI & SAM CLI
-
-Python 3.12
-
-IAM roles with Lambda, RDS, DynamoDB, SNS, and API Gateway permissions
 
