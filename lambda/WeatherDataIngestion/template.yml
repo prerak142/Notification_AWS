@@ -1,0 +1,67 @@
+# This AWS SAM template has been generated from your function's configuration. If
+# your function has one or more triggers, note that the AWS resources associated
+# with these triggers aren't fully specified in this template and include
+# placeholder values. Open this template in AWS Infrastructure Composer or your
+# favorite IDE and modify it to specify a serverless application with other AWS
+# resources.
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: An AWS Serverless Application Model template describing your function.
+Resources:
+  new:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src
+      Description: ''
+      MemorySize: 128
+      Timeout: 63
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      EphemeralStorage:
+        Size: 512
+      Environment:
+        Variables:
+          TOMORROW_API_KEY: yMIov4PiEBpWpuMA4RV9eAg6gSTsBegu
+          WEATHERAPI_API_KEY: 9c290bf725f642b49a793223252105
+          OPEN_METEO_URL: https://api.open-meteo.com/v1/forecast
+          DB_PORT: '5432'
+          OPENWEATHER_API_KEY: 99098e8fb1aa4c671ca0098a355bd154
+          SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:580075786360:WeatherAlertsTopic
+          DB_HOST: weather-db.cfaciysiukn7.ap-south-1.rds.amazonaws.com
+          DB_NAME: postgres
+          DB_USER: postgres
+          DB_PASS: your-password
+          YR_NO_URL: >-
+            https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=26.9124&lon=75.7873
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 21600
+        MaximumRetryAttempts: 2
+      Layers:
+        - >-
+          arn:aws:lambda:ap-south-1:770693421928:layer:Klayers-p312-psycopg2-binary:1
+        - arn:aws:lambda:ap-south-1:336392948345:layer:AWSSDKPandas-Python312:16
+      PackageType: Zip
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: arn:aws:logs:ap-south-1:580075786360:*
+            - Effect: Allow
+              Action:
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource:
+                - >-
+                  arn:aws:logs:ap-south-1:580075786360:log-group:/aws/lambda/new:*
+            - Effect: Allow
+              Action:
+                - '*'
+              Resource: '*'
+      RecursiveLoop: Terminate
+      SnapStart:
+        ApplyOn: None
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
