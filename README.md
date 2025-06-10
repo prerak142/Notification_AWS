@@ -52,6 +52,19 @@ This project enables real-time weather monitoring and rule-based notifications f
 - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`
 - `SNS_TOPIC_ARN`
 
+1
+AWSSDKPandas-Python312
+16
+python3.12
+x86_64
+arn:aws:lambda:ap-south-1:336392948345:layer:AWSSDKPandas-Python312:16
+2
+Klayers-p312-psycopg2-binary
+1
+python3.12
+x86_64
+arn:aws:lambda:ap-south-1:770693421928:layer:Klayers-p312-psycopg2-binary:1
+
 #### RulesEngine
 - Same DB credentials as above
 - `API_KEY`, `RULE_ID`
@@ -66,6 +79,18 @@ This project enables real-time weather monitoring and rule-based notifications f
 - Python 3.12
 - IAM roles with Lambda, RDS, DynamoDB, SNS, and API Gateway permissions
 
+1
+AWSSDKPandas-Python312
+16
+python3.12
+x86_64
+arn:aws:lambda:ap-south-1:336392948345:layer:AWSSDKPandas-Python312:16
+2
+Klayers-p312-psycopg2-binary
+1
+python3.12
+x86_64
+arn:aws:lambda:ap-south-1:770693421928:layer:Klayers-p312-psycopg2-binary:1
 ## Database Overview
 
 ### PostgreSQL Tables
