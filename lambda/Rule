@@ -1,0 +1,99 @@
+{
+  "rule_id": {
+    "S": "a1b2c3d4-e5f6-7890-abcd-123456789012"
+  },
+  "actions": {
+    "L": [
+      {
+        "M": {
+          "action_type": {
+            "S": "notification"
+          },
+          "channel": {
+            "S": "sms"
+          },
+          "message": {
+            "S": "Tomorrow's temperature is expected to rise by more than 2°C. Prepare for heat stress."
+          },
+          "priority": {
+            "S": "high"
+          },
+          "target_role": {
+            "S": "field_user"
+          }
+        }
+      }
+    ]
+  },
+  "active": {
+    "BOOL": true
+  },
+  "conditions": {
+    "L": [
+      {
+        "M": {
+          "operator": {
+            "S": "delta_gt"
+          },
+          "parameter": {
+            "S": "temperature"
+          },
+          "reference": {
+            "M": {
+              "parameter": {
+                "S": "temperature"
+              },
+              "source": {
+                "S": "sensor"
+              },
+              "time_offset": {
+                "S": "-1d"
+              }
+            }
+          },
+          "source": {
+            "S": "forecast"
+          },
+          "value": {
+            "N": "2"
+          }
+        }
+      }
+    ]
+  },
+  "created_at": {
+    "S": "2025-06-17T12:00:00Z"
+  },
+  "farm_id": {
+    "S": "f1a2b3c4-d5e6-7890-abcd-098765432109"
+  },
+  "farm_scope": {
+    "M": {
+      "farm_ids": {
+        "L": [
+          {
+            "S": "f1a2b3c4-d5e6-7890-abcd-098765432109"
+          }
+        ]
+      },
+      "scope_type": {
+        "S": "single"
+      }
+    }
+  },
+  "farm_scope_type": {
+    "S": "single"
+  },
+  "rule_name": {
+    "S": "Temperature Delta Alert"
+  },
+  "rule_type": {
+    "S": "weather"
+  },
+  "target_role": {
+    "S": "field_user"
+  },
+  "updated_at": {
+    "S": "2025-06-17T12:00:00Z"
+  }
+}
