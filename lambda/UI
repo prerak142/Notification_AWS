@@ -1,1 +1,64 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Submit JSON to DynamoDB</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 30px;
+        }
+        textarea {
+            width: 600px;
+            height: 200px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        #response {
+            margin-top: 20px;
+            white-space: pre-wrap;
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <h2>Store Rule in DynamoDB</h2>
+    <textarea id="jsonInput" placeholder='{"rule_id": "abc123", "condition": "temp > 30", "action": "alert"}'></textarea>
+    <br>
+    <button onclick="submitData()">Submit</button>
+    <p id="response"></p>
 
+    <script>
+        async function submitData() {
+            const jsonText = document.getElementById("jsonInput").value;
+            const responseEl = document.getElementById("response");
+
+            try {
+                const data = JSON.parse(jsonText);
+
+                const res = await fetch("https://fb7zj6k8of.execute-api.ap-south-1.amazonaws.com/prod/store-rule", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await res.json();
+                if (res.ok) {
+                    responseEl.style.color = "green";
+                    responseEl.innerText = "Success:\n" + JSON.stringify(result, null, 2);
+                } else {
+                    responseEl.style.color = "red";
+                    responseEl.innerText = " Server Error:\n" + JSON.stringify(result, null, 2);
+                }
+            } catch (e) {
+                responseEl.style.color = "red";
+                responseEl.innerText = " Invalid JSON:\n" + e.message;
+            }
+        }
+    </script>
+</body>
+</html>
