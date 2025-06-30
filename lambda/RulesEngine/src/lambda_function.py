@@ -1,3 +1,1133 @@
+# import json
+# import boto3
+# import psycopg2
+# from psycopg2.extras import RealDictCursor
+# import os
+# from datetime import datetime, timedelta
+# import dateutil.parser
+# from decimal import Decimal
+# import logging
+# import math
+# from statistics import median
+# import requests
+# import time
+# from urllib.parse import urlparse
+# from datetime import datetime, timezone
+
+# # --- Logging Setup ---
+# logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+# current_utc_time = datetime.utcnow().replace(tzinfo=dateutil.tz.UTC)
+# logger.info(f"Lambda function initialized at {current_utc_time.isoformat()}Z")
+
+# # --- Custom JSON Encoder ---
+# class DecimalEncoder(json.JSONEncoder):
+#     def default(self, obj):
+#         if isinstance(obj, Decimal):
+#             return float(obj) if obj % 1 else int(obj)
+#         if isinstance(obj, datetime):
+#             return obj.isoformat()
+#         return super().default(obj)
+
+# # --- AWS Clients ---
+# dynamodb = boto3.resource('dynamodb')
+# sns = boto3.client('sns')
+# s3_client = boto3.client('s3')
+
+# # --- DynamoDB Tables ---
+# rules_table = dynamodb.Table('Rules')
+# reports_table = dynamodb.Table('ScienceTeamReports')
+
+# # --- Environment Configuration ---
+# DB_HOST = os.getenv('DB_HOST')
+# DB_PORT = os.getenv('DB_PORT', '5432')
+# DB_NAME = os.getenv('DB_NAME')
+# DB_USER = os.getenv('DB_USER')
+# DB_PASSWORD = os.getenv('DB_PASSWORD')
+# SNS_TOPIC_ARN = os.getenv('SNS_TOPIC_ARN', 'arn:aws:sns:ap-south-1:580075786360:weather-alerts')
+# S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'weather-blogs-2025-science')
+
+# # --- Validation Configurations ---
+# VALID_FARM_IDS = {'udaipur_farm1', 'location2', 'location3'}
+# VALID_SOURCES = {'openweather', 'weatherapi', 'yrno', 'openmeteo'}
+# LOCATIONS = {
+#     'udaipur_farm1': {'lat': 24.5854, 'lon': 73.7125},
+#     'location2': {'lat': 25.1234, 'lon': 74.5678},
+#     'location3': {'lat': 26.4321, 'lon': 75.8765}
+# }
+# METRIC_MAPPINGS = {
+#     'temperature': 'temperature_c',
+#     'humidity': 'humidity_percent',
+#     'wind_speed': 'wind_speed_mps',
+#     'wind_direction': 'wind_direction_deg',
+#     'rainfall': 'rainfall_mm',
+#     'chance_of_rain': 'chance_of_rain_percent',
+#     'heat_index': 'heat_index'
+# }
+# VALID_OPERATORS = {'>', '<', '=', '>=', '<=', 'delta_gt', 'delta_lt', 'RATE>', 'DAY_DIFF>', 'TIME_WINDOW', 'AND', 'OR', 'NOT', 'SEQUENCE'}
+# VALID_NOTIFICATION_TYPES = {'email', 'sms', 'api_callback', 'app'}
+# VALID_STAKEHOLDERS = {'farmer', 'operations', 'science_team', 'management', 'field_user'}
+# VALID_CONFLICT_RESOLUTIONS = {'first_match', 'highest_priority', 'most_severe'}
+# VALIDATION_RANGES = {
+#     'temperature_c': (-50, 60),
+#     'humidity_percent': (0, 100),
+#     'wind_speed_mps': (0, 100),
+#     'wind_direction_deg': (0, 360),
+#     'rainfall_mm': (0, float('inf')),
+#     'chance_of_rain_percent': (0, 100),
+#     'heat_index': (-50, 80)
+# }
+
+# # --- Severity Thresholds ---
+# SEVERITY_THRESHOLDS = {
+#     'weather': {
+#         'temperature_c': {'low': 32, 'medium': 38, 'high': 42},
+#         'humidity_percent': {'low': 70, 'medium': 85, 'high': 95},
+#         'rainfall_mm': {'low': 5, 'medium': 25, 'high': 60},
+#         'chance_of_rain_percent': {'low': 50, 'medium': 80, 'high': 95},
+#         'wind_speed_mps': {'low': 10, 'medium': 18, 'high': 25},
+#         'heat_index': {'low': 35, 'medium': 40, 'high': 45}
+#     }
+# }
+
+# # --- Metric Units ---
+# METRIC_UNITS = {
+#     'temperature_c': '°C',
+#     'humidity_percent': '%',
+#     'wind_speed_mps': 'm/s',
+#     'wind_direction_deg': '°',
+#     'rainfall_mm': 'mm',
+#     'chance_of_rain_percent': '%',
+#     'heat_index': '°C'
+# }
+
+# # --- Retry Settings ---
+# MAX_RETRIES = 3
+# RETRY_DELAY = 5  # seconds
+
+# def parse_dynamodb_item(item):
+#     """Parse a DynamoDB item into standard Python types."""
+
+#     def parse_value(val):
+#         if not isinstance(val, dict) or len(val) != 1:
+#             return val  # Already parsed or unexpected format
+
+#         dtype, dval = next(iter(val.items()))
+
+#         if dtype == 'S':
+#             return dval
+#         elif dtype == 'N':
+#             try:
+#                 return int(dval) if dval.isdigit() else float(dval)
+#             except ValueError:
+#                 return dval
+#         elif dtype == 'BOOL':
+#             return dval
+#         elif dtype == 'NULL':
+#             return None
+#         elif dtype == 'L':
+#             return [parse_value(v) for v in dval]
+#         elif dtype == 'M':
+#             return {k: parse_value(v) for k, v in dval.items()}
+#         else:
+#             return val  # Unknown type fallback
+
+#     return {k: parse_value(v) for k, v in item.items()}
+
+
+# # --- Geospatial Validation ---
+# def validate_location(cursor, farm_id, lon, lat):
+#     """Validate farm location against predefined coordinates."""
+#     expected = LOCATIONS.get(farm_id)
+#     if not expected:
+#         return False
+#     cursor.execute(
+#         "SELECT ST_Distance(ST_SetSRID(ST_MakePoint(%s, %s), 4326), ST_SetSRID(ST_MakePoint(%s, %s), 4326)) AS dist",
+#         (lon, lat, expected['lon'], expected['lat'])
+#     )
+#     dist = cursor.fetchone()['dist']
+#     return dist < 1000  # Allow 1km tolerance
+
+# # --- Data Aggregation ---
+# def compute_angular_mean(degrees):
+#     """Compute mean of angular values (e.g., wind_direction_deg)."""
+#     if not degrees:
+#         return None
+#     radians = [math.radians(d) for d in degrees if d is not None]
+#     sin_sum = sum(math.sin(r) for r in radians)
+#     cos_sum = sum(math.cos(r) for r in radians)
+#     mean_rad = math.atan2(sin_sum, cos_sum)
+#     mean_deg = math.degrees(mean_rad) % 360
+#     return round(mean_deg, 1)
+
+# def aggregate_weather_data(rows, data_type):
+#     """Aggregate weather data from multiple sources using majority voting or median."""
+#     if not rows:
+#         return None, ["No data available"]
+
+#     metrics = [
+#         'temperature_c', 'humidity_percent', 'wind_speed_mps', 'wind_direction_deg', 'rainfall_mm'
+#     ] + (['chance_of_rain_percent'] if data_type == 'forecast' else [])
+#     aggregated = {}
+#     errors = []
+#     source_count = len([r for r in rows if r['source'] in VALID_SOURCES])
+#     missing_sources = [s for s in VALID_SOURCES if s not in {r['source'] for r in rows}]
+
+#     if source_count < 2:
+#         errors.append(f"Insufficient sources: {source_count}/4 (Missing: {', '.join(missing_sources)})")
+#         if source_count == 1:
+#             # Fallback to single source
+#             row = rows[0]
+#             for metric in metrics:
+#                 aggregated[metric] = float(row[metric]) if row[metric] is not None else None
+#             logger.warning(f"Fallback to single source: {row['source']}")
+#         else:
+#             return None, errors
+#     else:
+#         for metric in metrics:
+#             values = [float(row[metric]) if row[metric] is not None else None for row in rows]
+#             valid_values = [v for v in values if v is not None]
+#             if len(valid_values) < 2:
+#                 aggregated[metric] = None
+#                 errors.append(f"Insufficient valid {metric} values: {len(valid_values)}")
+#                 continue
+#             if metric == 'wind_direction_deg':
+#                 aggregated[metric] = compute_angular_mean(valid_values)
+#             else:
+#                 aggregated[metric] = round(median(valid_values), 2)
+#             logger.debug(f"Aggregated {metric}: {aggregated[metric]} from {valid_values}")
+
+#     # Set timestamp or forecast_for
+#     if data_type == 'current':
+#         aggregated['timestamp'] = rows[0]['timestamp']
+#     else:
+#         aggregated['forecast_for'] = rows[0]['forecast_for']
+#     aggregated['source_count'] = source_count
+
+#     return aggregated, errors
+
+# # --- Virtual Sensors ---
+# def compute_virtual_sensors(data):
+#     """Compute virtual sensor values (e.g., heat_index)."""
+#     if 'temperature_c' in data and 'humidity_percent' in data and data['temperature_c'] is not None and data['humidity_percent'] is not None:
+#         temp_c = float(data['temperature_c'])
+#         humidity = float(data['humidity_percent'])
+#         heat_index = temp_c + 0.33 * humidity - 40
+#         data['heat_index'] = round(heat_index, 2)
+#     return data
+
+# # --- Data Validation ---
+# def validate_data(data, rule_type, data_type):
+#     """Validate aggregated weather data against allowed ranges."""
+#     if rule_type != 'data':
+#         return data, [f"Invalid rule_type: {rule_type}"]
+    
+#     errors = []
+#     valid_metrics = {
+#         'current': {'temperature_c', 'humidity_percent', 'wind_speed_mps', 'wind_direction_deg', 'rainfall_mm', 'heat_index'},
+#         'forecast': {'temperature_c', 'humidity_percent', 'wind_speed_mps', 'wind_direction_deg', 'rainfall_mm', 'chance_of_rain_percent', 'heat_index'}
+#     }.get(data_type, set())
+    
+#     for metric in valid_metrics:
+#         if metric in data and data[metric] is not None:
+#             min_val, max_val = VALIDATION_RANGES.get(metric, (-float('inf'), float('inf')))
+#             try:
+#                 value = float(data[metric])
+#                 if not (min_val <= value <= max_val):
+#                     logger.warning(f"Invalid {metric} value {value} for {rule_type}/{data_type}")
+#                     errors.append(f"{metric}: {value} outside range [{min_val}, {max_val}]")
+#                     data[metric] = None
+#             except (ValueError, TypeError):
+#                 errors.append(f"{metric}: non-numeric value '{data[metric]}'")
+#                 data[metric] = None
+    
+#     return compute_virtual_sensors(data), errors
+
+
+# # --- Rule Validation ---
+# def validate_rule(rule):
+#     """Validate a rule from DynamoDB."""
+#     try:
+#         required_fields = {'rule_id', 'rule_type', 'conditions', 'actions', 'farm_scope'}
+#         missing_fields = required_fields - set(rule.keys())
+#         if missing_fields:
+#             logger.error(f"Rule {rule.get('rule_id', 'unknown')} invalid: missing {missing_fields}")
+#             return False, f"Missing fields: {', '.join(missing_fields)}"
+
+#         if rule['rule_type'] != 'weather':
+#             logger.error(f"Rule {rule['rule_id']} invalid: rule_type must be 'weather'")
+#             return False, "rule_type must be 'weather'"
+#         if rule['farm_scope']['scope_type'] not in {'single', 'all'}:
+#             logger.error(f"Rule {rule['rule_id']} invalid: farm_scope_type must be 'single' or 'all'")
+#             return False, "farm_scope_type must be 'single' or 'all'"
+#         if rule['farm_scope']['scope_type'] == 'single' and not rule['farm_scope']['farm_ids']:
+#             logger.error(f"Rule {rule['rule_id']} invalid: farm_ids required for single scope")
+#             return False, "farm_ids required for single scope"
+#         if 'target_role' in rule and rule['target_role'] not in VALID_STAKEHOLDERS:
+#             logger.error(f"Rule {rule['rule_id']} invalid: target_role {rule['target_role']}")
+#             return False, f"Invalid target_role: {rule['target_role']}"
+
+#         def check_conditions(conditions):
+#             if isinstance(conditions, list):
+#                 return all(check_conditions(cond)[0] for cond in conditions), []
+
+#             operator = conditions.get('operator')
+#             if operator not in VALID_OPERATORS:
+#                 return False, f"Invalid operator: {operator}"
+
+#             if operator in {'AND', 'OR', 'NOT', 'SEQUENCE'}:
+#                 sub_conditions = conditions.get('sub_conditions', [])
+#                 if not sub_conditions:
+#                     return False, f"No sub_conditions for {operator}"
+#                 if operator == 'NOT' and len(sub_conditions) != 1:
+#                     return False, "NOT requires one sub_condition"
+#                 if operator == 'SEQUENCE':
+#                     for i, cond in enumerate(sub_conditions):
+#                         if i % 2 == 1 and 'within' not in cond:
+#                             return False, "'within' missing in SEQUENCE"
+#                         elif i % 2 == 0 and 'within' in cond:
+#                             return False, "'within' in condition"
+#                 results = [check_conditions(cond) for cond in sub_conditions]
+#                 valid = all(r[0] for r in results)
+#                 errors = [err for r in results for err in r[1]]
+#                 return valid, errors
+
+#             if 'parameter' not in conditions or conditions['parameter'] not in METRIC_MAPPINGS:
+#                 return False, f"Invalid parameter: {conditions.get('parameter')}"
+#             if operator in {'delta_gt', 'delta_lt'} and 'reference' not in conditions:
+#                 return False, f"Reference missing for {operator}"
+#             if operator in {'>', '<', '=', '>=', '<=', 'delta_gt', 'delta_lt', 'RATE>', 'DAY_DIFF>'} and 'value' not in conditions:
+#                 return False, f"Value missing for {operator}"
+#             return True, []
+
+#         valid, condition_errors = check_conditions(rule['conditions'])
+#         if not valid:
+#             logger.error(f"Rule {rule['rule_id']} invalid: {condition_errors}")
+#             return False, f"Condition errors: {', '.join(condition_errors)}"
+
+#         for action in rule.get('actions', []):
+#             if 'action_type' not in action or action['action_type'] != 'notification':
+#                 logger.error(f"Rule {rule['rule_id']} invalid: action_type must be 'notification'")
+#                 return False, "action_type must be 'notification'"
+#             if 'channel' not in action or action['channel'] not in VALID_NOTIFICATION_TYPES:
+#                 logger.error(f"Rule {rule['rule_id']} invalid: channel {action.get('channel')}")
+#                 return False, f"Invalid channel: {action.get('channel')}"
+#             if 'message' not in action:
+#                 logger.error(f"Rule {rule['rule_id']} invalid: message missing")
+#                 return False, "message missing in action"
+#             if 'priority' not in action or action['priority'] not in {'low', 'medium', 'high'}:
+#                 logger.error(f"Rule {rule['rule_id']} invalid: priority {action.get('priority')}")
+#                 return False, f"Invalid priority: {action.get('priority')}"
+
+#         logger.info(f"Rule {rule['rule_id']} is valid")
+#         return True, ""
+#     except Exception as e:
+#         logger.error(f"Error validating rule {rule.get('rule_id', 'unknown')}: {str(e)}")
+#         return False, f"Validation error: {str(e)}"
+
+# # --- Data Fetching ---
+# def get_historical_trend(cursor, metric, farm_id, table, time_offset):
+#     """Fetch historical data for trend analysis."""
+#     try:
+#         time_column = 'forecast_for' if 'forecast' in table else 'timestamp'
+#         cursor.execute(
+#             f"""
+#             SELECT AVG({metric}) as avg_value
+#             FROM {table}
+#             WHERE farm_id = %s AND {time_column} > NOW() AT TIME ZONE 'UTC' - INTERVAL %s
+#             """,
+#             (farm_id, time_offset)
+#         )
+#         result = cursor.fetchone()
+#         logger.debug(f"Historical trend for {metric} at {farm_id}: {result}")
+#         return float(result['avg_value']) if result and result['avg_value'] is not None else None
+#     except Exception as e:
+#         logger.error(f"Error fetching trend for {farm_id}/{metric}: {e}")
+#         return None
+
+# def get_table_name(source):
+#     """Get PostgreSQL table name based on rule source."""
+#     return 'forecast_weather' if source == 'forecast' else 'current_weather'
+
+# # --- Condition Evaluation ---
+# def evaluate_condition(data, condition, table, farm_id, cursor, rule_id):
+#     """Evaluate a single condition."""
+#     try:
+#         metric = METRIC_MAPPINGS.get(condition['parameter'])
+#         operator = condition['operator']
+#         value = float(condition['value']) if 'value' in condition else None
+#         time_column = 'forecast_for' if 'forecast' in table else 'timestamp'
+#         if operator == 'TIME_WINDOW':
+#             threshold = condition['threshold']
+#             min_duration = condition['temporal']['min_duration']
+#             window = condition['temporal']['window']
+#             cursor.execute(
+#                 f"""
+#                 SELECT COUNT(*) FROM {table}
+#                 WHERE {metric} {threshold['operator']}%s
+#                 AND {time_column} > NOW() AT TIME ZONE 'UTC' - INTERVAL %s
+#                 AND farm_id = %s
+#                 """,
+#                 (float(threshold['value']), window, farm_id)
+#             )
+#             result = cursor.fetchone()
+#             if not result:
+#                 logger.info(f"TIME_WINDOW: No data for {metric} in {table}")
+#                 return False, "No data available"
+#             count = result['count']
+#             min_count = int(min_duration.split()[0]) if 'hour' in min_duration else int(min_duration.split()[0]) // 60
+#             logger.debug(f"TIME_WINDOW: {metric} {threshold['operator']} for {min_duration} in {window}, count: {count}, required: {min_count}")
+#             return count >= min_count, f"Count: {count}, required: {min_count}"
+
+#         if operator == 'RATE>':
+#             interval = condition['temporal']['interval']
+#             cursor.execute(
+#                 f"""
+#                 SELECT {metric}, {time_column} FROM {table}
+#                 WHERE farm_id = %s AND {time_column} <= NOW() AT TIME ZONE 'UTC'
+#                 ORDER BY {time_column} DESC LIMIT 2
+#                 """,
+#                 (farm_id,)
+#             )
+#             rows = cursor.fetchall()
+#             if len(rows) < 2:
+#                 logger.info(f"Rate-of-change for {metric}: Not enough data")
+#                 return False, "Not enough data for rate calculation"
+#             time_diff = float((rows[0][time_column] - rows[1][time_column]).total_seconds()/3600)
+#             value_diff = float(rows[0][metric]) - float(rows[1][metric])
+#             rate = value_diff / time_diff if time_diff != 0 else 0
+#             expected_rate = float(value) / (float(interval.split()[0]) / 60 if 'minute' in interval else float(interval.split()[0]))
+#             logger.debug(f"Rate for {metric}: {rate} vs {expected_rate}")
+#             return rate > expected_rate, f"Rate: {rate:.2f}, expected: {expected_rate:.2f}"
+
+#         if operator == 'DAY_DIFF>':
+#             day1 = condition['temporal']['day1']
+#             day2 = condition['temporal']['day2']
+#             now = datetime.utcnow().replace(tzinfo=dateutil.tz.UTC)
+#             day1_date = now if day1 == 'today' else now + timedelta(days=1) if day1 == 'tomorrow' else now + timedelta(days=int(day1.split('_')[1]))
+#             day2_date = now if day2 == 'today' else now + timedelta(days=1) if day2 == 'tomorrow' else now + timedelta(days=int(day2.split('_')[1]))
+#             day1_start = day1_date.replace(hour=0, minute=0, second=0, microsecond=0)
+#             day1_end = day1_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+#             day2_start = day2_date.replace(hour=0, minute=0, second=0, microsecond=0)
+#             day2_end = day2_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+#             cursor.execute(
+#                 f"""
+#                 SELECT AVG({metric}) as avg_value
+#                 FROM {table}
+#                 WHERE farm_id = %s AND {time_column} BETWEEN %s AND %s
+#                 """,
+#                 (farm_id, day1_start, day1_end)
+#             )
+#             result = cursor.fetchone()
+#             if not result or result['avg_value'] is None:
+#                 logger.warning(f"No data for {metric} on {day1}")
+#                 return False, f"No data for {day1_date}"
+#             day1_avg = float(result['avg_value'])
+#             cursor.execute(
+#                 f"""
+#                 SELECT AVG({metric}) as avg_value
+#                 FROM {table}
+#                 WHERE farm_id = %s AND {time_column} BETWEEN %s AND %s
+#                 """,
+#                 (farm_id, day2_start, day2_end)
+#             )
+#             result = cursor.fetchone()
+#             if not result or result['avg_value'] is None:
+#                 logger.warning(f"No data for {day2}")
+#                 return False, f"No data for {day2_date}"
+#             day2_avg = float(result['avg_value'])
+#             diff = day2_avg - day1_avg
+#             logger.debug(f"Day diff for {metric}: {day2_avg} - {day1_avg} = {diff} vs {value}")
+#             return diff > value, f"Difference: {diff:.2f}, required: {value}"
+
+#         if operator == 'delta_gt':
+#             time_offset = condition['reference']['time_offset']
+#             ref_metric = METRIC_MAPPINGS.get(condition['reference']['parameter'])
+#             cursor.execute(
+#                 f"""
+#                 SELECT {ref_metric} FROM {table}
+#                 WHERE farm_id = %s AND {time_column} <= NOW() AT TIME ZONE 'UTC' - INTERVAL %s
+#                 ORDER BY {time_column} DESC LIMIT 1
+#                 """,
+#                 (farm_id, time_offset)
+#             )
+#             ref_result = cursor.fetchone()
+#             if not ref_result:
+#                 logger.info(f"No reference data for {ref_metric} at offset {time_offset}")
+#                 return False, f"No reference for {time_offset}"
+#             ref_value = float(ref_result[ref_metric])
+#             latest_value = float(data.get(metric)) if data.get(metric) is not None else None
+#             if latest_value is None:
+#                 logger.info(f"No data for {metric} in rule {rule_id}")
+#                 return False, "No valid data for {metric}"
+#             delta = latest_value - ref_value
+#             logger.debug(f"Delta: {latest_value} - {ref_value} = {delta} vs {value}")
+#             return delta > value, f"Delta: {delta:.2f}, required: {value}"
+
+#         if operator == 'delta_lt':
+#             time_offset = condition['reference']['time_offset']
+#             ref_metric = METRIC_MAPPINGS.get(condition['reference']['parameter'])
+#             cursor.execute(
+#                 f"""
+#                 SELECT {ref_metric} FROM {table}
+#                 WHERE farm_id = %s AND {time_column} <= NOW() AT TIME ZONE 'UTC' - INTERVAL %s
+#                 ORDER BY {time_column} DESC LIMIT 1
+#                 """,
+#                 (farm_id, time_offset)
+#             )
+#             ref_result = cursor.fetchone()
+#             if not ref_result:
+#                 logger.info(f"No reference data for {ref_metric} at offset {time_offset}")
+#                 return False, f"No reference data for{time_offset}"
+#             ref_value = float(ref_result[ref_metric])
+#             latest_value = float(data.get(metric)) if data.get(metric) is not None else None
+#             if latest_value is None:
+#                 logger.info(f"No data for {metric} in rule {rule_id}")
+#                 return False, f"No valid datafor {metric}"
+#             delta = latest_value - ref_value
+#             logger.debug(f"Delta: {latest_value} - {ref_value} = {delta} vs {value}")
+#             return delta < value, f"Delta: {delta:.2f}, required: < {value}"
+#         latest_value = float(data.get(metric)) if data.get(metric) is not None else None
+#         if latest_value is None:
+#             logger.warning(f"No data for {metric} in rule {rule_id}")
+#             return False, f"No value for {metric}"
+#         if operator == '>':
+#             return latest_value > value, f"{metric}: {latest_value:.2f} > {value:.2f}"
+#         elif operator == '<':
+#             return latest_value < value, f"{metric}: {latest_value:.2f} < {value:.2f}"
+#         elif operator == '==':
+#             return latest_value == value, f"{metric}: {latest_value:.2f} == {value:.2f}"
+#         elif operator == '>=':
+#             return latest_value >= value, f"{metric}: {latest_value:.2f} >= {value:.2f}"
+#         elif operator == '<=':
+#             return latest_value <= value, f"{metric}: {latest_value:.2f} <= {value:.2f}"
+#         return False, f"Invalid operator: {operator}"
+#     except Exception as e:
+#         logger.error(f"Error evaluating condition in rule {rule_id}: {str(e)}")
+#         return False, f"Evaluation error: {str(e)}"
+# def evaluate_sequence(data, condition, table, farm_id, cursor, rule_id):
+#     """Evaluate a SEQUENCE condition with optional time gaps between events."""
+#     try:
+#         sub_conditions = condition['sub_conditions']
+#         time_column = 'forecast_for' if 'forecast' in table else 'timestamp'
+#         last_time = None
+#         max_interval = None
+
+#         for i, cond in enumerate(sub_conditions):
+#             # 'within' clause
+#             if i % 2 == 1:
+#                 max_interval = cond['within']
+#                 continue
+
+#             metric = METRIC_MAPPINGS.get(cond['parameter'])
+#             if not metric:
+#                 logger.warning(f"Unknown metric: {cond['parameter']} in rule {rule_id}")
+#                 return False, f"Unknown metric: {cond['parameter']}"
+
+#             # Fetch the first time this condition was met
+#             cursor.execute(
+#                 f"""
+#                 SELECT {time_column} FROM {table}
+#                 WHERE {metric} {cond['operator']} %s
+#                 AND farm_id = %s AND {time_column} > NOW() AT TIME ZONE 'UTC' - INTERVAL '24 hours'
+#                 ORDER BY {time_column} ASC LIMIT 1
+#                 """,
+#                 (float(cond['value']), farm_id)
+#             )
+#             result = cursor.fetchone()
+#             if not result:
+#                 logger.info(f"Sequence failed in rule {rule_id}: {metric} {cond['operator']} {cond.get('value', 'N/A')}")
+#                 return False, f"No data for {metric}: {cond['operator']} {cond.get('value', 'N/A')}"
+
+#             current_time = result[time_column]
+
+#             # If a previous condition was matched, check time difference
+#             if last_time and max_interval:
+#                 # Convert interval like "30 minutes" to minutes
+#                 interval_parts = max_interval.split()
+#                 interval_minutes = int(interval_parts[0]) if 'minute' in interval_parts[1] else int(interval_parts[0]) * 60
+#                 time_diff = (current_time - last_time).total_seconds() / 60
+#                 if time_diff > interval_minutes:
+#                     logger.info(f"Sequence failed in rule {rule_id}: Time gap {time_diff:.2f} > allowed {interval_minutes} minutes")
+#                     return False, f"Time gap: {time_diff:.2f} minutes exceeds {max_interval}"
+#             last_time = current_time
+
+#         logger.debug(f"Sequence passed for rule {rule_id}")
+#         return True, "Sequence conditions met"
+#     except Exception as e:
+#         logger.error(f"Error evaluating sequence in rule {rule_id}: {str(e)}")
+#         return False, f"Sequence error: {str(e)}"
+
+# def evaluate_conditions(data, conditions, table, farm_id, cursor, rule_id):
+#     """Evaluate conditions recursively."""
+#     try:
+#         # Handle list of conditions (implies AND)
+#         if isinstance(conditions, list):
+#             results = [evaluate_conditions(data, cond, table, farm_id, cursor, rule_id) for cond in conditions]
+#             return all(r[0] for r in results), [r[1] for r in results if r[1]]
+
+#         operator = conditions.get('operator')
+#         sub_conditions = conditions.get('sub_conditions', [])
+
+#         # AND logic
+#         if operator == 'AND':
+#             results = []
+#             for cond in sub_conditions:
+#                 if 'parameter' in cond:
+#                     result = evaluate_condition(data, cond, table, farm_id, cursor, rule_id)
+#                 else:
+#                     result = evaluate_conditions(data, cond, table, farm_id, cursor, rule_id)
+#                 results.append(result)
+#             return all(r[0] for r in results), [r[1] for r in results if r[1]]
+
+#         # OR logic
+#         elif operator == 'OR':
+#             results = []
+#             for cond in sub_conditions:
+#                 if 'parameter' in cond:
+#                     result = evaluate_condition(data, cond, table, farm_id, cursor, rule_id)
+#                 else:
+#                     result = evaluate_conditions(data, cond, table, farm_id, cursor, rule_id)
+#                 results.append(result)
+#             return any(r[0] for r in results), [r[1] for r in results if r[1]]
+
+#         # NOT logic
+#         elif operator == 'NOT':
+#             if not sub_conditions or not isinstance(sub_conditions, list):
+#                 return False, ["NOT operator needs one sub_condition"]
+#             result = evaluate_conditions(data, sub_conditions[0], table, farm_id, cursor, rule_id)
+#             return not result[0], [f"NOT: {result[1]}" if result[1] else []]
+
+#         # Sequence or other special operator handling (e.g. != might map to sequence)
+#         elif operator == '!=' or operator == 'SEQUENCE':
+#             return evaluate_sequence(data, conditions, table, farm_id, cursor, rule_id), []
+
+#         # Default: evaluate single condition
+#         return evaluate_condition(data, conditions, table, farm_id, cursor, rule_id)
+
+#     except Exception as e:
+#         logger.error(f"Error evaluating conditions in rule {rule_id}: {str(e)}")
+#         return False, [f"Conditions error: {str(e)}"]
+# # --- Notification Logic ---
+
+# def determine_severity(rule_type, metric, value, delta=None):
+#     """Determine severity based on metric and thresholds."""
+#     thresholds = SEVERITY_THRESHOLD.get(rule_type, {}).get(metric, {})
+#     if not thresholds:
+#         return 'low'
+
+#     # Convert value to float if needed
+#     if isinstance(value, (Decimal, str)):
+#         value = float(value)
+
+#     # Threshold comparison
+#     if value >= thresholds.get('high', float('inf')):
+#         severity = 'high'
+#     elif value >= thresholds.get('medium', float('inf')):
+#         severity = 'medium'
+#     elif value >= thresholds.get('low', float('inf')):
+#         severity = 'low'
+#     else:
+#         severity = 'low'
+
+#     # Delta-based severity override
+#     if delta is not None:
+#         delta_thresholds = {
+#             'temperature_c': 5,
+#             'humidity_percent': 20,
+#             'rainfall_mm': 30,
+#             'heat_index': 5
+#         }
+#         if metric in delta_thresholds and abs(delta) > delta_thresholds[metric]:
+#             if severity == 'low':
+#                 severity = 'medium'
+#             elif severity == 'medium':
+#                 severity = 'high'
+
+#     return severity
+
+
+# def compose_message(action, rule, data_dict, farm_id, data_type, severity, metric, value, timestamp, delta=None, time_offset=None, source_count=0):
+#     """Generate dynamic notification message."""
+#     message_template = action.get('message', '')
+#     unit = METRIC_UNITS.get(metric, {}).get('unit', '')
+
+#     # Extract parameter
+#     if isinstance(rule.get('conditions'), list):
+#         parameter = rule['conditions'][0].get('parameter', 'unknown')
+#     else:
+#         parameter = rule.get('conditions', {}).get('parameter', 'unknown')
+
+#     # Fill replacements
+#     replacements = {
+#         '{farm_id}': str(farm_id),
+#         '{rule_name}': rule.get('rule_name', 'Unknown Rule'),
+#         '{severity}': severity.capitalize(),
+#         '{timestamp}': timestamp.isoformat(),
+#         '{parameter}': parameter,
+#         '{value}': str(value),
+#         '{unit}': unit,
+#         '{delta}': str(delta) if delta is not None else '',
+#         '{time_offset}': str(time_offset) if time_offset else '',
+#         '{source_count}': str(source_count)
+#     }
+
+#     message = message_template
+#     for placeholder, replacement in replacements.items():
+#         message = message.replace(placeholder, replacement)
+
+#     return message
+
+# def select_channels(stakeholder, severity, priority, timestamp):
+#     """Select notification channels based on stakeholder and time."""
+#     """
+#     current_hour = timestamp.hour
+#     is_night = 0 <= current_hour < 6
+#     stakeholder = stakeholder or 'default'
+
+#     if stakeholder == 'farmer':
+#         return ['sms', 'app'] if priority == 'high' and not is_night else ['app']
+#     elif stakeholder == 'operations':
+#         return ['sms', 'email'] if priority == 'high' and not is_night else ['email']
+#     elif stakeholder == 'science_team':
+#         return ['email']
+#     elif stakeholder == 'management':
+#         return ['email', 'api_callback'] if priority in ['medium', 'high'] else ['email']
+#     elif stakeholder == 'field_user' or stakeholder == 'default':
+#         return ['sms', 'app'] if priority == 'high' and not is_night else ['email', 'app']
+#     return ['email']
+
+
+# def send_notification(channel, message, priority, severity, rule_name, timestamp, endpoint=None, retries=0):
+
+#     try:
+#         if isinstance(timestamp, str):
+#             timestamp = datetime.fromisoformat(timestamp)
+
+#         if channel == 'sms':
+#             response = sns.publish(
+#                 TopicArn=SNS_TOPIC_ARN,
+#                 Message=message,
+#                 MessageAttributes={'channel': {'DataType': 'String', 'StringValue': 'sms'}}
+#             )
+#             logger.info(f"Sent SMS: {message}, SNS Message ID: {response['MessageId']}")
+
+#         elif channel == 'email':
+#             subject = f"Weather {rule_name} ({severity.capitalize()}) at {timestamp.isoformat()}"
+#             response = sns.publish(
+#                 TopicArn=SNS_TOPIC_ARN,
+#                 Message=message,
+#                 Subject=subject,
+#                 MessageAttributes={'channel': {'DataType': 'String', 'StringValue': 'email'}}
+#             )
+#             logger.info(f"Sent email: {message}, SNS Message ID: {response['MessageId']}")
+
+#         elif channel == 'api_callback' and endpoint:
+#             parsed = urlparse(endpoint)
+#             if parsed.scheme not in ['http', 'https'] or not parsed.netloc:
+#                 raise ValueError(f"Invalid callback URL: {endpoint}")
+#             response = requests.post(endpoint, json={'message': message, 'severity': severity}, timeout=10)
+#             response.raise_for_status()
+#             logger.info(f"API callback sent to {endpoint}: {message}")
+
+#         elif channel == 'app':
+#             logger.info(f"App notification queued: {message}")
+
+#         return True
+
+#     except Exception as e:
+#         if retries < MAX_RETRIES:
+#             logger.warning(f"Retrying {channel} notification ({retries + 1}) due to error: {e}")
+#             time.sleep(RETRY_DELAY)
+#             return send_notification(channel, message, priority, severity, rule_name, timestamp, endpoint, retries + 1)
+
+#         logger.error(f"Failed to send {channel} after {MAX_RETRIES} retries: {str(e)}")
+#         return False
+# # def generate_daily_summary(cursor, farm_id):
+# #     try:
+# #         if farm_id not in VALID_FARM_IDS:
+# #             logger.error(f"Invalid farm_id: {farm_id}")
+# #             return False
+
+# #         date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+# #         timestamp = datetime.now(timezone.utc).isoformat()
+
+# #         # --- SQL Query to Get Daily Weather Summary ---
+# #         interval_hours = 24
+# # cursor.execute(
+# #     """
+# #     SELECT 
+# #         AVG(temperature_c) AS avg_temp,
+# #         MAX(temperature_c) AS max_temp,
+# #         MIN(temperature_c) AS min_temp,
+# #         AVG(humidity_percent) AS avg_humidity,
+# #         MAX(humidity_percent) AS max_humidity,
+# #         MIN(humidity_percent) AS min_humidity,
+# #         SUM(rainfall_mm) AS total_rain,
+# #         AVG(wind_speed_mps) AS avg_wind_speed
+# #     FROM current_weather_data
+# #     WHERE farm_id = %s AND timestamp >= NOW() - INTERVAL %s
+# #     """,
+# #     (farm_id, f"{interval_hours} hours")
+# # )
+
+# #             WHERE farm_id = %s AND timestamp >= NOW() - INTERVAL '{interval_hours} hours'
+# #             """,
+# #             (farm_id,)
+# #         )
+# #         stats = cursor.fetchone() or {}
+
+# #         def fmt(x): return f"{x:.2f}" if x is not None else 'N/A'
+
+# #         avg_temp = fmt(stats.get('avg_temp'))
+# #         max_temp = fmt(stats.get('max_temp'))
+# #         min_temp = fmt(stats.get('min_temp'))
+# #         avg_humidity = fmt(stats.get('avg_humidity'))
+# #         max_humidity = fmt(stats.get('max_humidity'))
+# #         min_humidity = fmt(stats.get('min_humidity'))
+# #         total_rain = fmt(stats.get('total_rain'))
+# #         avg_wind = fmt(stats.get('avg_wind_speed'))
+
+# #         # --- Construct JSON summary ---
+# #         summary_data = {
+# #             "farm_id": farm_id,
+# #             "date": date,
+# #             "timestamp": timestamp,
+# #             "summary": {
+# #                 "avg_temp": avg_temp,
+# #                 "max_temp": max_temp,
+# #                 "min_temp": min_temp,
+# #                 "avg_humidity": avg_humidity,
+# #                 "max_humidity": max_humidity,
+# #                 "min_humidity": min_humidity,
+# #                 "total_rain": total_rain,
+# #                 "avg_wind_speed": avg_wind
+# #             }
+# #         }
+
+# #         # --- Store summary JSON to S3 ---
+# #         s3_key = f"summaries/{farm_id}/{date}/weather_summary.json"
+# #         s3_client.put_object(
+# #             Bucket=S3_BUCKET_NAME,
+# #             Key=s3_key,
+# #             Body=json.dumps(summary_data, indent=2),
+# #             ContentType='application/json'
+# #         )
+
+# #         logger.info(f"Weather summary stored in S3: s3://{S3_BUCKET_NAME}/{s3_key}")
+# #         return True
+
+# #     except Exception as e:
+# #         logger.error(f"Error generating daily summary for {farm_id}: {str(e)}")
+# #         return False
+
+# # --- Main Handler ---
+# from datetime import datetime, timezone
+
+# # --- Main Handler ---
+# def lambda_handler(event, context):
+#     """Main Lambda handler for rule evaluation."""
+#     conn = None
+#     cursor = None
+#     timestamp = datetime.now(timezone.utc)
+
+#     try:
+#         # Database connection
+#         for attempt in range(1, MAX_RETRIES + 1):
+#             try:
+#                 conn = psycopg2.connect(
+#                     host=DB_HOST,
+#                     port=DB_PORT,
+#                     database=DB_NAME,
+#                     user=DB_USER,
+#                     password=DB_PASSWORD,
+#                     cursor_factory=RealDictCursor,
+#                     connect_timeout=10
+#                 )
+#                 cursor = conn.cursor()
+#                 logger.info("Database connection successful")
+#                 break
+#             except psycopg2.Error as e:
+#                 logger.error(f"Database connection attempt {attempt}/{MAX_RETRIES} failed: {e}")
+#                 if attempt == MAX_RETRIES:
+#                     return {
+#                         'statusCode': 500,
+#                         'body': json.dumps({'error': 'Database connection failed'}, cls=DecimalEncoder)
+#                     }
+#                 time.sleep(RETRY_DELAY)
+
+#         # Parse event
+#         farm_id = event.get('farm_id', 'udaipur_farm1')
+#         if farm_id not in VALID_FARM_IDS:
+#             return {
+#                 'statusCode': 400,
+#                 'body': json.dumps({'error': f"Invalid farm_id: {farm_id}"}, cls=DecimalEncoder)
+#             }
+
+#         # --- Test Mode ---
+#         if event.get('test_mode'):
+#             try:
+#                 test_results = []
+#                 test_time_range = event.get('test_time_range', '24 hours')
+#                 test_sources = event.get('test_sources', list(VALID_TYPES))
+
+#                 response = rules_table.scan()
+#                 rules = [parse_dynamodb_item(item) for item in response.get('Items', [])]
+#                 valid_rules = [
+#                     r for r in rules if r.get('active', True) and (
+#                         r['farm_scope']['scope_type'] == 'all' or
+#                         farm_id in r.get('farm_scope', {}).get('farm_ids', [])
+#                     )
+#                 ]
+
+#                 for rule in valid_rules:
+#                     is_valid, validation_error = validate_rule(rule)
+#                     if not is_valid:
+#                         test_results.append({
+#                             'rule_id': rule['rule_id'],
+#                             'status': 'Invalid rule',
+#                             'description': validation_error,
+#                             'conditions': rule['conditions']
+#                         })
+#                         continue
+
+#                     source = (
+#                         rule['conditions'][0].get('source', 'current') if isinstance(rule['conditions'], list)
+#                         else rule['conditions'].get('source', 'current')
+#                     )
+#                     table = get_table_name(source)
+#                     time_column = 'timestamp'
+#                     source_filter = ' AND source IN %s' if test_sources else ''
+
+#                     cursor.execute(
+#                         f"""
+#                         SELECT 
+#                             source, {time_column}, temperature_c, humidity_percent,
+#                             wind_speed_mps, wind_direction_deg, rainfall_mm,
+#                             chance_of_rain,
+#                             ST_X(location) AS longitude,
+#                             ST_Y(location) AS latitude
+#                         FROM {table}
+#                         WHERE farm_id = %s AND {time_column} >= NOW() - INTERVAL %s
+#                             {source_filter}
+#                         ORDER BY {time_column} DESC, source
+#                         """,
+#                         (farm_id, test_time_range, tuple(test_sources)) if test_sources else (farm_id, test_time_range)
+#                     )
+#                     rows = cursor.fetchall()
+
+#                     if not rows:
+#                         test_results.append({
+#                             'rule_id': rule['rule_id'],
+#                             'status': 'Not triggered',
+#                             'description': f"No {source} data for {farm_id} in last {test_time_range}",
+#                             'conditions': rule['conditions']
+#                         })
+#                         continue
+
+#                     valid_rows = [r for r in rows if validate_location(cursor, farm_id, r['longitude'], r['latitude'])]
+#                     if not valid_rows:
+#                         test_results.append({
+#                             'rule_id': rule['rule_id'],
+#                             'status': 'Not triggered',
+#                             'description': f"Invalid location data for {farm_id}",
+#                             'conditions': rule['conditions']
+#                         })
+#                         continue
+
+#                     data, agg_errors = aggregate_weather_data(valid_rows, source)
+#                     if not data:
+#                         test_results.append({
+#                             'rule_id': rule['rule_id'],
+#                             'status': 'Not triggered',
+#                             'description': f"Data aggregation failed: {'; '.join(agg_errors)}",
+#                             'conditions': rule['conditions']
+#                         })
+#                         continue
+
+#                     data_dict, validation_errors = validate_data(data, rule['rule_type'], source)
+#                     errors = agg_errors + validation_errors
+
+#                     triggered, eval_results = evaluate_conditions(data_dict, rule['conditions'], table, farm_id, cursor, rule['rule_id'])
+#                     result = {
+#                         'rule_id': rule['rule_id'],
+#                         'status': 'Triggered' if triggered else 'Not triggered',
+#                         'description': f"Rule evaluated: {'; '.join(eval_results) if eval_results else 'Conditions met' if triggered else 'Conditions not met'}",
+#                         'conditions': data_dict,
+#                         'data': {
+#                             'timestamp': data_dict.get('timestamp', data_dict.get('forecast_for')).isoformat(),
+#                             'temperature_c': float(data_dict.get('temperature_c')) if data_dict.get('temperature_c') is not None else None,
+#                             'humidity_percent': float(data_dict.get('humidity_percent')) if data_dict.get('humidity_percent') is not None else None,
+#                             'wind_speed_mps': float(data_dict.get('wind_speed_mps')) if data_dict.get('wind_speed_mps') is not None else None,
+#                             'wind_direction_deg': float(data_dict.get('wind_direction_deg')) if data_dict.get('wind_direction_deg') is not None else None,
+#                             'rainfall_mm': float(data_dict.get('rainfall_mm')) if data_dict.get('rainfall_mm') is not None else None,
+#                             'chance_of_rain_percent': float(data_dict.get('chance_of_rain_percent')) if data_dict.get('chance_of_rain_percent') is not None else None,
+#                             'heat_index': float(data_dict.get('heat_index')) if data_dict.get('heat_index') is not None else None,
+#                             'source_count': data_dict.get('source_count', 0),
+#                             'sources_used': [r['source'] for r in valid_rows]
+#                         },
+#                         'errors': errors if errors else []
+#                     }
+#                     test_results.append(result)
+
+#                 return {
+#                     'statusCode': 200,
+#                     'body': json.dumps({'test_results': test_results}, cls=DecimalEncoder)
+#                 }
+#             except Exception as e:
+#                 logger.error(f"Test mode error: {str(e)}")
+#                 return {
+#                     'statusCode': 500,
+#                     'body': json.dumps({'error': f"Test mode failed: {str(e)}"}, cls=DecimalEncoder)
+#                 }
+
+#         # --- Normal Mode ---
+#         try:
+#             response = rules_table.scan()
+#             rules = [parse_dynamodb_item(item) for item in response.get('Items', [])]
+#             valid_rules = [
+#                 r for r in rules if r.get('active', True) and (
+#                     r['farm_scope']['scope_type'] == 'all' or
+#                     farm_id in r.get('farm_scope', {}).get('farm_ids', [])
+#                 )
+#             ]
+
+#             triggered_actions = []
+#             for rule in valid_rules:
+#                 is_valid, validation_error = validate_rule(rule)
+#                 if not is_valid:
+#                     logger.warning(f"Skipping invalid rule {rule['rule_id']}: {validation_error}")
+#                     continue
+
+#                 source = (
+#                     rule['conditions'][0].get('source', 'current') if isinstance(rule['conditions'], list)
+#                     else rule['conditions'].get('source', 'current')
+#                 )
+#                 table = get_table_name(source)
+#                 time_column = 'timestamp'
+
+#                 cursor.execute(
+#                     f"""
+#                     SELECT 
+#                         source, {time_column}, temperature_c, humidity_percent,
+#                         wind_speed_mps, wind_direction_deg, rainfall_mm,
+#                         chance_of_rain,
+#                         ST_X(location) AS longitude,
+#                         ST_Y(location) AS latitude
+#                     FROM {table}
+#                     WHERE farm_id = %s AND {time_column} <= NOW() AT TIME ZONE 'UTC'
+#                     ORDER BY {time_column} DESC, source
+#                     """,
+#                     (farm_id,)
+#                 )
+#                 rows = cursor.fetchall()
+#                 if not rows:
+#                     logger.warning(f"No {source} data for {farm_id} in rule {rule['rule_id']}")
+#                     continue
+
+#                 valid_rows = [r for r in rows if validate_location(cursor, farm_id, r['longitude'], r['latitude'])]
+#                 if not valid_rows:
+#                     logger.warning(f"Invalid location data for {farm_id} in rule {rule['rule_id']}")
+#                     continue
+
+#                 data, agg_errors = aggregate_weather_data(valid_rows, source)
+#                 if not data:
+#                     logger.warning(f"Data aggregation failed for rule {rule['rule_id']}: {agg_errors}")
+#                     continue
+
+#                 data_dict, validation_errors = validate_data(data, rule['rule_type'], source)
+
+#                 triggered, eval_results = evaluate_conditions(data_dict, rule['conditions'], table, farm_id, cursor, rule['rule_id'])
+#                 if triggered:
+#                     metric = METRIC_MAPPINGS[
+#                         rule['conditions'][0]['parameter'] if isinstance(rule['conditions'], list)
+#                         else rule['conditions']['parameter']
+#                     ]
+#                     value = data_dict.get(metric)
+#                     delta = None
+#                     time_offset = None
+#                     if (
+#                         (isinstance(rule['conditions'], list) and rule['conditions'][0]['operator'] in {'delta_gt', 'delta_lt'}) or
+#                         (not isinstance(rule['conditions'], list) and rule['conditions']['operator'] in {'delta_gt', 'delta_lt'})
+#                     ):
+#                         time_offset = (
+#                             rule['conditions'][0]['reference']['time_offset'] if isinstance(rule['conditions'], list)
+#                             else rule['conditions']['reference']['time_offset']
+#                         )
+#                         ref_metric = METRIC_MAPPINGS[
+#                             rule['conditions'][0]['reference']['parameter'] if isinstance(rule['conditions'], list)
+#                             else rule['conditions']['reference']['parameter']
+#                         ]
+#                         cursor.execute(
+#                             f"""
+#                             SELECT {ref_metric} 
+#                             FROM {table} 
+#                             WHERE farm_id = %s AND {time_column} <= NOW() - INTERVAL %s
+#                             ORDER BY {time_column} DESC 
+#                             LIMIT %s
+#                             """,
+#                             (farm_id, time_offset, 1)
+#                         )
+#                         ref_result = cursor.fetchone()
+#                         if ref_result:
+#                             delta = float(data_dict.get(metric)) - float(ref_result.get(ref_metric))
+
+#                     severity = determine_severity(rule['rule_type'], metric, value, delta)
+
+#                     for action in rule['actions']:
+#                         message = compose_message(
+#                             action, rule, data_dict, farm_id, source, severity, metric, value,
+#                             timestamp, delta, time_offset, data_dict.get('source_count', 4)
+#                         )
+#                         triggered_actions.append((rule, action, severity, message))
+
+#             resolved_actions = resolve_conflicts(valid_rules, triggered_actions)
+
+#             results = []
+#             for rule, action, severity, message in resolved_actions:
+#                 stakeholder = rule.get('target_role', 'default')
+#                 priority = action['priority']
+#                 channels = select_channels(stakeholder, severity, priority, timestamp)
+#                 for channel in channels:
+#                     endpoint = action.get('callback_url') if channel == 'api_callback' else None
+#                     success = send_notification(channel, message, priority, severity, rule['rule_name'], timestamp, endpoint)
+#                     if stakeholder == 'science_team':
+#                         store_summary_and_notify(farm_id, stakeholder, rule['rule_id'], message, severity, priority)
+#                     results.append({
+#                         'rule_id': rule['rule_id'],
+#                         'action': action['action_type'],
+#                         'channel': channel,
+#                         'status': 'Success' if success else 'Failed',
+#                         'message': message
+#                     })
+
+#             return {
+#                 'statusCode': 200,
+#                 'body': json.dumps({'results': results}, cls=DecimalEncoder)
+#             }
+
+#         except Exception as e:
+#             logger.error(f"Error processing rules: {str(e)}")
+#             return {
+#                 'statusCode': 500,
+#                 'body': json.dumps({'error': f"Error processing rules: {str(e)}"}, cls=DecimalEncoder)
+#             }
+
+#     except Exception as e:
+#         logger.error(f"Lambda fatal error: {str(e)}")
+#         return {
+#             'statusCode': 500,
+#             'body': json.dumps({'error': f"Lambda failure: {str(e)}"}, cls=DecimalEncoder)
+#         }
+
+#     finally:
+#         if cursor:
+#             cursor.close()
+#         if conn:
+#             conn.close()
+#         logger.info("Database connection closed")
+
+
 import json
 import boto3
 import psycopg2
