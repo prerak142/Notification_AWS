@@ -228,15 +228,4 @@ Each Lambda should have:
 
 ---
 
-## Future Improvements
 
-- Swagger/OpenAPI 3.0 spec for `/store-rule`
-- Rule listing, editing, and deleting from UI
-- Integration with Grafana or QuickSight for dashboards
-- ML-based forecasting/alerting
-
----
-
-## License
-
-This project is licensed under the MIT License.
