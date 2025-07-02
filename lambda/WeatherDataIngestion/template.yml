@@ -23,13 +23,13 @@ Resources:
         Size: 512
       Environment:
         Variables:
-          TOMORROW_API_KEY: yMIov4PiEBpWpuMA4RV9eAg6gSTsBegu
-          WEATHERAPI_API_KEY: 9c290bf725f642b49a793223252105
-          OPEN_METEO_URL: https://api.open-meteo.com/v1/forecast
+          TOMORROW_API_KEY: 
+          WEATHERAPI_API_KEY: 
+          OPEN_METEO_URL: 
           DB_PORT: '5432'
-          OPENWEATHER_API_KEY: 99098e8fb1aa4c671ca0098a355bd154
-          SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:580075786360:WeatherAlertsTopic
-          DB_HOST: weather-db.cfaciysiukn7.ap-south-1.rds.amazonaws.com
+          OPENWEATHER_API_KEY: 
+          SNS_TOPIC_ARN: 
+          DB_HOST: 
           DB_NAME: postgres
           DB_USER: postgres
           DB_PASS: your-password
