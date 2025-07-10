@@ -68,7 +68,7 @@ METRICS_BY_TYPE = {
 VALID_OPERATORS = {'>', '<', '=', '>=', '<=', 'delta_gt', 'delta_lt', 'RATE>', 'DAY_DIFF>', 'TIME_WINDOW', 'AND', 'OR', 'NOT', 'SEQUENCE'}
 
 # Valid notification types
-VALID_NOTIFICATION_TYPES = {'email', 'sms', 'sqs'}
+VALID_NOTIFICATION_TYPES = {'email', 'sms', 'sqs', 'api_callback'}
 
 # Valid stakeholders
 VALID_STAKEHOLDERS = {'farmer', 'operations', 'science_team', 'management', 'field'}
@@ -447,7 +447,7 @@ def compose_message(action, rule, data, farm_id, severity, metric, value, timest
 
     return message
 
-def select_channels(stakeholder, severity, timestamp):
+def select_channels(stakeholder, severity, timestamp, is_api_request=False):
     """Select notification channels."""
     ist = dateutil.tz.gettz('Asia/Kolkata')
     timestamp_ist = timestamp.astimezone(ist)
@@ -461,13 +461,16 @@ def select_channels(stakeholder, severity, timestamp):
     elif stakeholder == 'science_team':
         return ['email'] if severity == 'high' else ['sqs']
     elif stakeholder == 'management':
-        return ['email']
+        channels = ['email']
+        if severity in ['medium', 'high'] or is_api_request:
+            channels.append('api_callback')
+        return channels
     elif stakeholder == 'field':
         return ['sms'] if severity == 'high' and not is_night else ['email']
     return ['email']
 
 def send_notification(notification_type, message, severity, rule_name, timestamp, endpoint=None, retries=0):
-    """Send notification via SNS or SQS."""
+    """Send notification via SNS or API callback."""
     try:
         if notification_type == 'sms':
             response = sns.publish(
@@ -495,6 +498,11 @@ def send_notification(notification_type, message, severity, rule_name, timestamp
                 })
             )
             logger.info(f"Sent SQS notification: {message}, Response: {response['MessageId']}")
+        elif notification_type == 'api_callback':
+            if endpoint:
+                response = requests.post(endpoint, json={'message': message, 'severity': severity}, timeout=10)
+                response.raise_for_status()
+                logger.info(f"Sent API callback to {endpoint}: {message}")
         return True
     except Exception as e:
         if retries < MAX_RETRIES:
@@ -658,8 +666,8 @@ def evaluate_condition(data, condition, table, farm_id, cursor, rule_id):
             )
             result = cursor.fetchone()
             if not result or result['avg_value'] is None:
-                logger.info(f"No error for data: {metric}")
-                return None
+                logger.info(f"No data for {metric} on {day2}")
+                return False, f"No data for {metric} on {day2}"
             day2_avg = float(result['avg_value'])
 
             diff = day2_avg - day1_avg
@@ -683,49 +691,49 @@ def evaluate_condition(data, condition, table, farm_id, cursor, rule_id):
             ref_value = float(ref_result[metric])
             latest_value = float(data.get(metric)) if data.get(metric) is not None else None
             if latest_value is None:
-                logger.info KNMI(f"No data for {metric} in rule {rule_id}")
-                return None, f"No data for {metric}"
+                logger.info(f"No data for {metric} in rule {rule_id}")
+                return False, f"No data for {metric}"
             delta = latest_value - ref_value
             logger.debug(f"Delta: {latest_value} - {ref_value} = {delta} vs threshold {value}")
             return delta > float(value) if operator == 'delta_gt' else delta < float(value), f"Delta: {delta} {'>' if operator == 'delta_gt' else '<'} {value}"
 
-        if condition.get(my_key) and operator in {'time', 'value'}:
-            duration = condition['duration']['duration']
+        if condition.get('temporal') and operator in {'>', '<', '=', '>=', '<='}:
+            duration = condition['temporal']['duration']
             cursor.execute(
                 f"""
                 SELECT COUNT(*) FROM {table}
-                WHERE {metric} {operator} = %s
-                AND {time} > NOW() - INTERVAL %s
+                WHERE {metric} {operator} %s
+                AND {time_column} > NOW() - INTERVAL %s
                 AND farm_id = %s
                 """,
                 (value, duration, farm_id)
             )
             result = cursor.fetchone()
             if not result:
-                logger.info(f"No data found for {metric} in {table}")
+                logger.info(f"No data for {metric} in {table}")
                 return False, f"No data for {metric}"
             count = result['count']
             logger.debug(f"Temporal condition: {metric} {operator} {value} for {duration}, count: {count}")
-            return count > 0, f"Temporal condition count: {count} > 0"
+            return count > 0, f"Temporal condition: count {count} > 0"
 
         latest_value = float(data.get(metric)) if data.get(metric) is not None else None
         if latest_value is None:
             logger.info(f"No data for {metric} in rule {rule_id}")
-            return None, f"No data for {metric}"
-        if operator == 'greater_than':
-            return latest_value > value, f"{metric}: {latest_value} > {value}"
-        elif operator == 'less_than':
-            return latest_value < value, f"{metric}: {latest_value} < {value}"
-        elif operator == 'equal_to':
-            return latest_value == value, f"{metric}: {latest_value} == {value}"
-        elif operator == 'greater_than_or_equal':
-            return latest_value >= value, f"{metric}: {latest_value} >= {value}"
-        elif operator == 'less_than_or_equal':
-            return latest_value <= value, f"{metric}: {latest_value} <= {value}"
-        return None, f"Unsupported operator: {operator}"
+            return False, f"No data for {metric}"
+        if operator == '>':
+            return latest_value > float(value), f"{metric}: {latest_value} > {value}"
+        elif operator == '<':
+            return latest_value < float(value), f"{metric}: {latest_value} < {value}"
+        elif operator == '=':
+            return latest_value == float(value), f"{metric}: {latest_value} == {value}"
+        elif operator == '>=':
+            return latest_value >= float(value), f"{metric}: {latest_value} >= {value}"
+        elif operator == '<=':
+            return latest_value <= float(value), f"{metric}: {latest_value} <= {value}"
+        return False, f"Unsupported operator: {operator}"
     except Exception as e:
         logger.error(f"Error evaluating condition in rule {rule_id}: {str(e)}. Condition: {json.dumps(condition, cls=DecimalEncoder)}")
-        return None, f"Error: {str(e)}"
+        return False, f"Error: {str(e)}"
 
 def evaluate_sequence(data, sub_conditions, table, farm_id, cursor, rule_id):
     """Evaluate a SEQUENCE operator."""
@@ -753,7 +761,7 @@ def evaluate_sequence(data, sub_conditions, table, farm_id, cursor, rule_id):
             result = cursor.fetchone()
             if not result:
                 logger.info(f"Sequence condition failed in rule {rule_id}: {cond['metric']} {cond['operator']} {cond['value']} not found")
-                return None, f"Sequence failed: {cond['metric']} {cond['operator']} {cond['value']} not found")
+                return False, f"Sequence failed: {cond['metric']} {cond['operator']} {cond['value']} not found"
 
             current_time = result[time_column]
             if last_time and max_interval:
@@ -761,70 +769,70 @@ def evaluate_sequence(data, sub_conditions, table, farm_id, cursor, rule_id):
                 max_minutes = int(max_interval.split()[0])
                 if time_diff > max_minutes:
                     logger.info(f"Sequence failed in rule {rule_id}: Time between events {time_diff} minutes > {max_interval}")
-                    return None, f"Sequence failed: Time between events {time_diff} minutes > {max_interval}"
+                    return False, f"Sequence failed: Time between events {time_diff} minutes > {max_interval}"
             last_time = current_time
         logger.info(f"Sequence condition passed for rule {rule_id}")
         return True, "Sequence passed"
     except Exception as e:
         logger.error(f"Error evaluating sequence in rule {rule_id}: {str(e)}. Sub_conditions: {json.dumps(sub_conditions, cls=DecimalEncoder)}")
-        return None, f"Error: {str(e)}")
+        return False, f"Error: {str(e)}")
 
 def evaluate_conditions(data, conditions, table, farm_id, cursor, rule_id):
     """Evaluate conditions recursively."""
     try:
         if isinstance(conditions, list):
             results = [
-                evaluate_condition(data, cond, table, farm_id, cursor, conditions) if isinstance(cond, dict) and 'metric_conditions' in cond
-                else evaluate_conditions(data, cond, table, farm_id, cursor, conditions)
+                evaluate_condition(data, cond, table, farm_id, cursor, rule_id) if isinstance(cond, dict) and 'metric' in cond
+                else evaluate_conditions(data, cond, table, farm_id, cursor, rule_id)
                 for cond in conditions
             ]
-            valid = all(r[0] for r in results if r[0] is not None)
+            valid = all(r[0] for r in results)
             details = [r[1] for r in results]
-            logger.info(f"List conditions for rule {rule_id}: {valid}, details: {details}")
+            logger.info(f"List conditions for rule {rule_id}: {valid}, Details: {details}")
             return valid, details
 
         if not isinstance(conditions, dict):
             logger.error(f"Invalid condition format for rule {rule_id}: {conditions}")
-            return [f"Invalid condition type: {conditions}"]
+            return False, [f"Invalid condition format: {conditions}"]
 
         operator = conditions.get('operator')
         sub_conditions = conditions.get('sub_conditions', [])
 
         if operator == 'AND':
             results = [
-                evaluate_condition(data, cond, table, farm_id, cursor, sub_conditions) if isinstance(sub_conditions, dict) and 'condition' in cond
-                else evaluate_conditions(data, cond, table, farm_id, sub_conditions)
+                evaluate_condition(data, cond, table, farm_id, cursor, rule_id) if isinstance(cond, dict) and 'metric' in cond
+                else evaluate_conditions(data, cond, table, farm_id, cursor, rule_id)
                 for cond in sub_conditions
             ]
-            valid = all(r[0] for r in results if r[0] is not None)
-            details = sub_conditions(r[1])
-            logger.info(f"AND condition for rule {rule_id}: {valid}, count: {details}")
+            valid = all(r[0] for r in results)
+            details = [r[1] for r in results]
+            logger.info(f"AND condition for rule {rule_id}: {valid}, Details: {details}")
             return valid, details
         elif operator == 'OR':
             results = [
-                evaluate_condition(data, cond, sub_conditions, farm_id, results) if isinstance(farm_id, dict) and 'condition' in cond
-                else evaluate_conditions(data, cond, sub_conditions, farm_id, None)
+                evaluate_condition(data, cond, table, farm_id, cursor, rule_id) if isinstance(cond, dict) and 'metric' in cond
+                else evaluate_conditions(data, cond, table, farm_id, cursor, rule_id)
                 for cond in sub_conditions
             ]
-            valid = any(r[0] for r in results if r[0] is not None)
-            details = sub_conditions(r[1])
-            logger.info(f"OR condition for rule {rule}: {valid}, count: {details}")
+            valid = any(r[0] for r in results)
+            details = [r[1] for r in results]
+            logger.info(f"OR condition for rule {rule_id}: {valid}, Details: {details}")
             return valid, details
         elif operator == 'NOT':
-            result = evaluate_conditions(data, sub_conditions[0], table, farm_id, cursor, not)
-            logger.info(f"NOT condition for {rule_id}: {not result}, count: {result[1]}")
-            return not result, [f"NOT: {result[1]}"]
+            result = evaluate_conditions(data, sub_conditions[0], table, farm_id, cursor, rule_id)
+            logger.info(f"NOT condition for rule {rule_id}: {not result[0]}, Details: {result[1]}")
+            return not result[0], [f"NOT: {result[1]}"]
         elif operator == 'SEQUENCE':
-            result = evaluate_sequence(data, sub_conditions, table, farm_id, cursor, sequence)
-            logger.info(f"SEQUENCE condition for rule {rule_id}: {result}, count: {result[1]}")
+            result = evaluate_sequence(data, sub_conditions, table, farm_id, cursor, rule_id)
+            logger.info(f"SEQUENCE condition for rule {rule_id}: {result[0]}, Details: {result[1]}")
             return result
 
-        result = evaluate_condition(data['data'], conditions, table, farm_id, condition_id)
-        logger.info(f"Single condition for {rule_id}: {result}, count: {result[1]}")
+        result = evaluate_condition(data, conditions, table, farm_id, cursor, rule_id)
+        logger.info(f"Single condition for rule {rule_id}: {result[0]}, Details: {result[1]}")
         return result
     except Exception as e:
-        logger.error(f"Error evaluating conditions in rule {rule_id}: {str(e)}. Conditions: {json.dumps(conditions, cls= {})}")
-        return [f"Error: {str(e)}"]
+        logger.error(f"Error evaluating conditions in rule {rule_id}: {str(e)}. Conditions: {json.dumps(conditions, cls=DecimalEncoder)}")
+        return False, [f"Error: {str(e)}"]
 
 def resolve_conflict(rules, triggered_actions):
     """Resolve conflicts among triggered actions."""
@@ -833,26 +841,26 @@ def resolve_conflict(rules, triggered_actions):
     if len(rules) <= 1:
         return triggered_actions
 
-    conflict_strategy = rules[0].get('conflict_resolution', {})
-    logger.error(f"Resolving conflicts with strategy: {conflict_strategy}")
+    conflict_strategy = rules[0].get('conflict_resolution', 'first_match')
+    logger.info(f"Resolving conflicts with strategy: {conflict_strategy}")
 
     if conflict_strategy == 'highest_priority':
-        highest_action = max(
+        max_action = max(
             triggered_actions,
-            key=lambda x: x['rule'].get('priority', 0)
+            key=lambda x: int(x['rule'].get('priority', 0))
         )
-        logger.info(f"Selected highest priority action: {highest_action['rule_id']} Priority: {highest_action['rule'].get('priority')}")
-        return [highest_action]
+        logger.info(f"Selected highest priority action: {max_action['rule_id']} (Priority: {max_action['rule'].get('priority')})")
+        return [max_action]
     elif conflict_strategy == 'most_severe':
-        severity_map = severity_map.get('low', 'medium')
-        highest_action = max(
+        severity_map = {'low': 1, 'medium': 2, 'high': 3}
+        max_action = max(
             triggered_actions,
-            key=lambda x: x.get('severity_map'], x
+            key=lambda x: severity_map.get(x['severity'], 0)
         )
-        logger.info(f"Selected highest severity: {highest_action['rule_id']} Severity: {highest_action['severity']}")
-        return [highest_action]
+        logger.info(f"Selected most severe action: {max_action['rule_id']} (Severity: {max_action['severity']})")
+        return [max_action]
     else:
-        logger.info(f"Selected first action: {triggered_actions[0]['rule_id']}")
+        logger.info(f"Selected first match: {triggered_actions[0]['rule_id']}")
         return [triggered_actions[0]]
 
 def get_all_rule_ids():
@@ -860,7 +868,7 @@ def get_all_rule_ids():
     try:
         response = rules_table.scan(ProjectionExpression='rule_id')
         return sorted([item['rule_id'] for item in response.get('Items', [])])
-    except Exception as e:
+    except ClientError as e:
         logger.error(f"Error fetching rule IDs: {str(e)}")
         return []
 
@@ -922,7 +930,7 @@ def get_majority_weather_data(cursor, rule, farm_id):
                     aggregated[metric] = most_common[0][0]
                 else:
                     # No majority: use average for numeric, first for non-numeric
-                    aggregated[metric] = statistics.mean(values) if values else values[0]
+                    aggregated[metric] = statistics.mean(values) if all(isinstance(v, (int, float, Decimal)) for v in values) else values[0]
             majority_data.append(aggregated)
 
         logger.info(f"Majority weather data for {farm_id}, {table}: {json.dumps(majority_data, cls=DecimalEncoder)}")
@@ -964,9 +972,11 @@ def lambda_handler(event, context):
     try:
         specific_rule_id = None
         farm_ids = list(VALID_FARM_IDS)
+        is_api_request = False
 
         # Handle API request for specific rule evaluation
         if event.get('httpMethod') == 'POST' and event.get('path') == '/evaluate-rule':
+            is_api_request = True
             try:
                 body = json.loads(event.get('body', '{}'))
                 specific_rule_id = body.get('rule_id')
@@ -1105,7 +1115,7 @@ def lambda_handler(event, context):
                             message = compose_message(
                                 action, rule, data, farm_id, severity, primary_metric, primary_value, timestamp, cursor, delta, time_offset
                             )
-                            channels = select_channels(rule['stakeholder'], severity, timestamp)
+                            channels = select_channels(rule['stakeholder'], severity, timestamp, is_api_request)
                             action_info = {
                                 'type': action['type'],
                                 'message': message,
@@ -1120,7 +1130,8 @@ def lambda_handler(event, context):
                                     queue_batch_notification(farm_id, rule['stakeholder'], rule_id, message, severity)
                             else:
                                 for channel in channels:
-                                    success = send_notification(channel, message, severity, rule['rule_name'], timestamp)
+                                    endpoint = action.get('endpoint', None) if channel == 'api_callback' else None
+                                    success = send_notification(channel, message, severity, rule['rule_name'], timestamp, endpoint)
                                     if not success:
                                         logger.error(f"Failed to send notification for channel {channel} in rule {rule_id}")
 
@@ -1190,3 +1201,5 @@ def lambda_handler(event, context):
         if conn:
             conn.close()
         logger.info("Database connection closed")
+
+
